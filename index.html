@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 12px; font-family: Arial, sans-serif; color: #222; background: #fff; }
+    h3 { margin: 0 0 12px 0; font-size: 18px; }
+    .row { border: 1px solid #ddd; border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+    input, select, button { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px; border-radius: 8px; }
+    input, select { border: 1px solid #bbb; background: #fff; }
+    .results { border: 1px solid #ddd; border-radius: 8px; margin-top: 5px; overflow: hidden; }
+    .result { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 14px; line-height: 1.35; }
+    .result:last-child { border-bottom: 0; }
+    .result:hover { background: #f5f5f5; }
+    .chosen { background: #f7f7f7; padding: 10px; border-radius: 8px; font-size: 14px; line-height: 1.4; }
+    .controls { display: flex; gap: 8px; margin-top: 8px; }
+    .controls > div { flex: 1; }
+    small { display: block; margin-bottom: 4px; font-weight: bold; }
+    .add { border: 1px solid #888; background: #fff; font-weight: bold; cursor: pointer; }
+    .remove { width: auto; border: 0; background: transparent; color: #b00020; font-size: 13px; padding: 6px 0; cursor: pointer; }
+    .hint { margin-top: 8px; color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h3>RICAMBI UTILIZZATI</h3>
+  <div id="rows"></div>
+  <button type="button" class="add" id="add">+ Aggiungi ricambio</button>
+  <div class="hint">Cerca per codice commerciale o descrizione. Il codice interno RAT-xxxx non viene mostrato.</div>
+
+<script>
+const UNITS = ['pezzi', 'cm', 'litri', 'Kg'];
+const rows = [];
+const root = document.getElementById('rows');
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function addRow() {
+  rows.push({ id: Date.now() + Math.random(), q: '', results: [], selected: null, unit: 'pezzi', qty: '' });
+  render();
+}
+
+function getOutput() {
+  return {
+    ricambi_utilizzati: rows.filter(r => r.selected).map(r => ({
+      COD_RICAMBIO: r.selected.code,
+      Ricambi: r.selected.description,
+      unita_misura: r.unit,
+      quantita_utilizzata: r.qty === '' ? '' : Number(r.qty)
+    }))
+  };
+}
+
+function sendData() {
+  if (window.JFCustomWidget) {
+    JFCustomWidget.sendData({ value: JSON.stringify(getOutput()) });
+  }
+}
+
+async function search(row, value) {
+  row.q = value;
+  row.selected = null;
+
+  if (!value.trim()) {
+    row.results = [];
+    render();
+    return;
+  }
+
+  try {
+    const API = 'https://script.google.com/macros/s/AKfycby_QAET2KqQB_Rq_VFC0SOHIVenJCcunLWPFVgz6CipZXTad1c63I0--O3ZY7Rh3Fsziw/exec';
+    const url = API + '?q=' + encodeURIComponent(value.trim());
+    const response = await fetch(url);
+    const data = await response.json();
+    row.results = data.ok ? data.results : [];
+  } catch (error) {
+    row.results = [];
+  }
+  render();
+}
+
+function selectResult(row, item) {
+  row.selected = {
+    code: item.code || '',
+    description: item.description || '',
+    masterUnit: item.unit || ''
+  };
+  row.q = '';
+  row.results = [];
+  if (UNITS.includes(item.unit)) row.unit = item.unit;
+  render();
+  sendData();
+}
+
+function render() {
+  root.innerHTML = rows.map((row, index) => `
+    <div class="row" data-index="${index}">
+      ${row.selected ? `
+        <div class="chosen"><strong>${esc(row.selected.description)}</strong></div>
+        <div class="controls">
+          <div>
+            <small>Unità di misura</small>
+            <select class="unit">
+              ${UNITS.map(unit => `<option value="${unit}" ${row.unit === unit ? 'selected' : ''}>${unit}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <small>Quantità utilizzata</small>
+            <input class="qty" type="number" min="0" step="any" inputmode="decimal" value="${esc(row.qty)}">
+          </div>
+        </div>
+      ` : `
+        <input class="search" type="search" autocomplete="off" placeholder="Cerca codice o descrizione..." value="${esc(row.q)}">
+        ${row.results.length ? `
+          <div class="results">
+            ${row.results.map((item, resultIndex) => `
+              <div class="result" data-result="${resultIndex}">${esc(item.description)}</div>
+            `).join('')}
+          </div>
+        ` : ''}
+      `}
+      ${rows.length > 1 ? `<button type="button" class="remove">Rimuovi ricambio</button>` : ''}
+    </div>
+  `).join('');
+
+  root.querySelectorAll('.row').forEach(function(container, index) {
+    const row = rows[index];
+    const searchInput = container.querySelector('.search');
+
+    if (searchInput) {
+      let timer;
+      searchInput.addEventListener('input', function(event) {
+        clearTimeout(timer);
+        const value = event.target.value;
+        timer = setTimeout(function() { search(row, value); }, 180);
+      });
+    }
+
+    container.querySelectorAll('.result').forEach(function(element) {
+      element.addEventListener('click', function() {
+        const resultIndex = Number(element.dataset.result);
+        selectResult(row, row.results[resultIndex]);
+      });
+    });
+
+    const unit = container.querySelector('.unit');
+    if (unit) unit.addEventListener('change', function(event) {
+      row.unit = event.target.value;
+      sendData();
+    });
+
+    const qty = container.querySelector('.qty');
+    if (qty) qty.addEventListener('input', function(event) {
+      row.qty = event.target.value;
+      sendData();
+    });
+
+    const remove = container.querySelector('.remove');
+    if (remove) remove.addEventListener('click', function() {
+      rows.splice(index, 1);
+      render();
+      sendData();
+    });
+  });
+}
+
+document.getElementById('add').addEventListener('click', function() {
+  addRow();
+  sendData();
+});
+
+addRow();
+
+if (window.JFCustomWidget) {
+  JFCustomWidget.subscribe('ready', function() {
+    sendData();
+  });
+
+  JFCustomWidget.subscribe('submit', function() {
+    const output = getOutput();
+    JFCustomWidget.sendData({ value: JSON.stringify(output) });
+    JFCustomWidget.sendSubmit({
+      valid: true,
+      value: JSON.stringify(output)
+    });
+  });
+}
+</script>
+</body>
+</html>

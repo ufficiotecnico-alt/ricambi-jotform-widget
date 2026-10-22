@@ -15,20 +15,22 @@
     .result { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 14px; line-height: 1.35; }
     .result:last-child { border-bottom: 0; }
     .result:hover { background: #f5f5f5; }
-    .chosen { background: #f7f7f7; padding: 10px; border-radius: 8px; font-size: 14px; line-height: 1.4; }
+    .chosen { background: #f7f7f7; padding: 10px; border-radius: 8px; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
     .controls { display: flex; gap: 8px; margin-top: 8px; }
-    .controls > div { flex: 1; }
+    .controls > div { flex: 1; min-width: 0; }
     small { display: block; margin-bottom: 4px; font-weight: bold; }
     .add { border: 1px solid #888; background: #fff; font-weight: bold; cursor: pointer; }
     .remove { width: auto; border: 0; background: transparent; color: #b00020; font-size: 13px; padding: 6px 0; cursor: pointer; }
     .hint { margin-top: 8px; color: #666; font-size: 12px; }
+    .manual { margin-top: 6px; border: 1px solid #888; background: #f7f7f7; font-weight: bold; cursor: pointer; }
+    .status { margin-top: 8px; color: #666; font-size: 13px; line-height: 1.35; }
   </style>
 </head>
 <body>
   <h3>RICAMBI UTILIZZATI</h3>
   <div id="rows"></div>
   <button type="button" class="add" id="add">+ Aggiungi ricambio</button>
-  <div class="hint">Cerca per codice commerciale o descrizione. Il codice interno RAT-xxxx non viene mostrato.</div>
+  <div class="hint">Cerca per codice commerciale o descrizione. Se non trovi il ricambio, puoi usare la descrizione manuale. Il codice interno RAT-xxxx non viene mostrato.</div>
 
 <script>
 const UNITS = ['pezzi', 'cm', 'litri', 'Kg'];
@@ -42,18 +44,30 @@ function esc(value) {
 }
 
 function addRow() {
-  rows.push({ id: Date.now() + Math.random(), q: '', results: [], selected: null, unit: 'pezzi', qty: '' });
+  rows.push({
+    id: Date.now() + Math.random(),
+    q: '',
+    results: [],
+    selected: null,
+    unit: 'pezzi',
+    qty: '',
+    searching: false,
+    searchError: false
+  });
   render();
 }
 
 function getOutput() {
   return {
-    ricambi_utilizzati: rows.filter(r => r.selected).map(r => ({
-      COD_RICAMBIO: r.selected.code,
-      Ricambi: r.selected.description,
-      unita_misura: r.unit,
-      quantita_utilizzata: r.qty === '' ? '' : Number(r.qty)
-    }))
+    ricambi_utilizzati: rows
+      .filter(r => r.selected && String(r.selected.description || '').trim())
+      .map(r => ({
+        COD_RICAMBIO: r.selected.code || '',
+        Ricambi: String(r.selected.description || '').trim(),
+        unita_misura: r.unit,
+        quantita_utilizzata: r.qty === '' ? '' : Number(r.qty),
+        Origine: r.selected.manual ? 'MANUALE' : 'ANAGRAFICA'
+      }))
   };
 }
 
@@ -66,34 +80,70 @@ function sendData() {
 async function search(row, value) {
   row.q = value;
   row.selected = null;
+  row.searchError = false;
 
   if (!value.trim()) {
     row.results = [];
+    row.searching = false;
     render();
+    sendData();
     return;
   }
+
+  row.searching = true;
+  render();
 
   try {
     const API = 'https://script.google.com/macros/s/AKfycby_QAET2KqQB_Rq_VFC0SOHIVenJCcunLWPFVgz6CipZXTad1c63I0--O3ZY7Rh3Fsziw/exec';
     const url = API + '?q=' + encodeURIComponent(value.trim());
     const response = await fetch(url);
     const data = await response.json();
+
+    // Ignora una risposta vecchia se nel frattempo la ricerca è cambiata.
+    if (row.q !== value) return;
+
     row.results = data.ok ? data.results : [];
   } catch (error) {
+    if (row.q !== value) return;
     row.results = [];
+    row.searchError = true;
+  } finally {
+    if (row.q === value) {
+      row.searching = false;
+      render();
+    }
   }
-  render();
 }
 
 function selectResult(row, item) {
   row.selected = {
     code: item.code || '',
     description: item.description || '',
-    masterUnit: item.unit || ''
+    masterUnit: item.unit || '',
+    manual: false
   };
   row.q = '';
   row.results = [];
+  row.searching = false;
   if (UNITS.includes(item.unit)) row.unit = item.unit;
+  render();
+  sendData();
+}
+
+function selectManual(row) {
+  const description = String(row.q || '').trim();
+  if (!description) return;
+
+  row.selected = {
+    code: '',
+    description: description,
+    masterUnit: '',
+    manual: true
+  };
+  row.q = '';
+  row.results = [];
+  row.searching = false;
+  row.searchError = false;
   render();
   sendData();
 }
@@ -102,7 +152,10 @@ function render() {
   root.innerHTML = rows.map((row, index) => `
     <div class="row" data-index="${index}">
       ${row.selected ? `
-        <div class="chosen"><strong>${esc(row.selected.description)}</strong></div>
+        <div class="chosen">
+          <strong>${esc(row.selected.description)}</strong>
+          ${row.selected.manual ? '<div class="status">Ricambio inserito manualmente</div>' : ''}
+        </div>
         <div class="controls">
           <div>
             <small>Unità di misura</small>
@@ -116,13 +169,18 @@ function render() {
           </div>
         </div>
       ` : `
-        <input class="search" type="search" autocomplete="off" placeholder="Cerca codice o descrizione..." value="${esc(row.q)}">
+        <input class="search" type="search" autocomplete="off" placeholder="Cerca ricambio per codice o descrizione..." value="${esc(row.q)}">
+        ${row.searching ? '<div class="status">Ricerca in corso…</div>' : ''}
         ${row.results.length ? `
           <div class="results">
             ${row.results.map((item, resultIndex) => `
               <div class="result" data-result="${resultIndex}">${esc(item.description)}</div>
             `).join('')}
           </div>
+        ` : ''}
+        ${row.q.trim() && !row.searching && !row.results.length ? `
+          <button type="button" class="manual">Usa «${esc(row.q.trim())}» come descrizione manuale</button>
+          <div class="status">${row.searchError ? 'Ricerca non riuscita. Puoi comunque registrare la descrizione manualmente.' : 'Nessun ricambio trovato. Puoi registrare il testo inserito come descrizione manuale.'}</div>
         ` : ''}
       `}
       ${rows.length > 1 ? `<button type="button" class="remove">Rimuovi ricambio</button>` : ''}
@@ -138,6 +196,10 @@ function render() {
       searchInput.addEventListener('input', function(event) {
         clearTimeout(timer);
         const value = event.target.value;
+        row.q = value;
+        row.results = [];
+        row.searching = false;
+        row.searchError = false;
         timer = setTimeout(function() { search(row, value); }, 180);
       });
     }
@@ -147,6 +209,11 @@ function render() {
         const resultIndex = Number(element.dataset.result);
         selectResult(row, row.results[resultIndex]);
       });
+    });
+
+    const manual = container.querySelector('.manual');
+    if (manual) manual.addEventListener('click', function() {
+      selectManual(row);
     });
 
     const unit = container.querySelector('.unit');
@@ -164,6 +231,7 @@ function render() {
     const remove = container.querySelector('.remove');
     if (remove) remove.addEventListener('click', function() {
       rows.splice(index, 1);
+      if (!rows.length) addRow();
       render();
       sendData();
     });
